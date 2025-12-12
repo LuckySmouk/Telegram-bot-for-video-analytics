@@ -1,0 +1,15 @@
+# Telegram Bot
+aiogram==3.13.1
+
+# Database
+psycopg2-binary==2.9.9
+
+# Vector Database
+chromadb==0.5.23
+
+# LLM
+ollama==0.4.4
+
+# Utilities
+python-dotenv==1.0.1
+numpy==1.26.4

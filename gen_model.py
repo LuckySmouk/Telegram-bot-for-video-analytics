@@ -1,654 +1,302 @@
-import sqlite3
+"""
+gen_model.py - Универсальный обработчик запросов на естественном языке
+"""
+
+import psycopg2
 import re
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 import chromadb
 from chromadb.config import Settings
 import ollama
 import logging
-from typing import Optional, Tuple, Dict, Any, List, Union
+from typing import Optional, Dict, Any, Union
+import os
 
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    filename='video_analytics.log'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger('VideoAnalytics')
+
+# Параметры подключения к PostgreSQL
+DB_CONFIG = {
+    'host': os.getenv('DB_HOST', 'localhost'),
+    'port': os.getenv('DB_PORT', '5432'),
+    'database': os.getenv('DB_NAME', 'video_analytics'),
+    'user': os.getenv('DB_USER', 'postgres'),
+    'password': os.getenv('DB_PASSWORD', 'postgres')
+}
 
 class VideoAnalytics:
     """Система анализа видео данных с поддержкой естественного языка"""
     
-    # Карта месяцев для парсинга дат
+    # Карта месяцев для парсинга дат (вспомогательная)
     MONTH_MAP = {
-        'января': 1, 'январь': 1, 'янв': 1,
-        'февраля': 2, 'февраль': 2, 'фев': 2,
-        'марта': 3, 'март': 3, 'мар': 3,
-        'апреля': 4, 'апрель': 4, 'апр': 4,
-        'мая': 5, 'май': 5,
-        'июня': 6, 'июнь': 6, 'июн': 6,
-        'июля': 7, 'июль': 7, 'июл': 7,
-        'августа': 8, 'август': 8, 'авг': 8,
-        'сентября': 9, 'сентябрь': 9, 'сен': 9,
-        'октября': 10, 'октябрь': 10, 'окт': 10,
-        'ноября': 11, 'ноябрь': 11, 'ноя': 11,
-        'декабря': 12, 'декабрь': 12, 'дек': 12
-    }
-    
-    # Доступные методы для обработки вопросов
-    AVAILABLE_METHODS = {
-        "get_video_count": {
-            "description": "Получить общее количество видео в системе",
-            "params": {}
-        },
-        "get_videos_by_creator_in_date_range": {
-            "description": "Получить количество видео у креатора в диапазоне дат",
-            "params": ["creator_id", "date_range"]
-        },
-        "get_videos_with_views_more_than": {
-            "description": "Получить количество видео с просмотрами больше указанного значения",
-            "params": ["views_threshold"]
-        },
-        "get_total_views_growth_on_date": {
-            "description": "Получить суммарный рост просмотров за указанную дату",
-            "params": ["date"]
-        },
-        "get_unique_videos_with_new_views_on_date": {
-            "description": "Получить количество уникальных видео с новыми просмотрами за указанную дату",
-            "params": ["date"]
-        }
+        'января': 1, 'февраля': 2, 'марта': 3, 'апреля': 4,
+        'мая': 5, 'июня': 6, 'июля': 7, 'августа': 8,
+        'сентября': 9, 'октября': 10, 'ноября': 11, 'декабря': 12,
+        'январь': 1, 'февраль': 2, 'март': 3, 'апрель': 4,
+        'май': 5, 'июнь': 6, 'июль': 7, 'август': 8,
+        'сентябрь': 9, 'октябрь': 10, 'ноябрь': 11, 'декабрь': 12
     }
 
-    def __init__(self, db_path: str = 'video_data.db', chroma_path: str = './chroma_db'):
-        """
-        Инициализация системы анализа видео
-        
-        Args:
-            db_path: Путь к SQLite базе данных
-            chroma_path: Путь к хранилищу ChromaDB
-        """
-        self.db_path = db_path
-        self.chroma_path = chroma_path
-        
-        # Инициализация ChromaDB клиента
-        self.chroma_client = chromadb.PersistentClient(
-            path=chroma_path,
-            settings=Settings(anonymized_telemetry=False)
-        )
-        
-        # Безопасное получение коллекции
+    def __init__(self, chroma_path: str = './chroma_db'):
+        """Инициализация системы анализа"""
+        # Подключение к PostgreSQL
         try:
-            self.collection = self.chroma_client.get_collection(name='video_embeddings')
-            logger.info(f"Коллекция ChromaDB успешно загружена: {self.collection.count()} записей")
-        except ValueError as e:
-            logger.error(f"Ошибка загрузки коллекции 'video_embeddings': {e}")
-            raise RuntimeError("Коллекция 'video_embeddings' не найдена в ChromaDB. "
-                              "Убедитесь, что запустили json_to_base.py для создания коллекции.")
+            self.conn = psycopg2.connect(
+                host=DB_CONFIG['host'],
+                port=int(DB_CONFIG['port']),
+                database=DB_CONFIG['database'],
+                user=DB_CONFIG['user'],
+                password=DB_CONFIG['password']
+            )
+            logger.info(f"✅ Подключено к PostgreSQL: {DB_CONFIG['database']}")
+        except Exception as e:
+            logger.error(f"❌ Ошибка подключения к PostgreSQL: {e}")
+            raise
         
-        # Установка соединения с SQLite
-        self.conn = sqlite3.connect(self.db_path)
-        logger.info(f"Соединение с БД установлено: {db_path}")
+        # Инициализация ChromaDB
+        try:
+            self.chroma_client = chromadb.PersistentClient(
+                path=chroma_path,
+                settings=Settings(anonymized_telemetry=False)
+            )
+            self.collection = self.chroma_client.get_collection(name='video_schema')
+            logger.info(f"✅ ChromaDB коллекция загружена: {self.collection.count()} записей")
+        except Exception as e:
+            logger.error(f"❌ Ошибка загрузки ChromaDB: {e}")
+            raise
 
     def __del__(self):
-        """Закрытие соединений при удалении объекта"""
+        """Закрытие соединений"""
         if hasattr(self, 'conn') and self.conn:
             self.conn.close()
-            logger.info("Соединение с БД закрыто")
+            logger.info("🔌 Соединение с PostgreSQL закрыто")
 
-    def _execute_query(self, query: str, params: Optional[tuple] = None) -> list:
+    def _normalize_date_in_question(self, question: str) -> str:
         """
-        Безопасное выполнение SQL-запроса
-        
-        Args:
-            query: SQL-запрос
-            params: Параметры для запроса
-        
-        Returns:
-            Результат запроса
+        Нормализация дат в вопросе для корректной передачи в SQL
+        Преобразует "28 ноября 2025" в "2025-11-28"
         """
-        cursor = self.conn.cursor()
-        try:
-            if params:
-                cursor.execute(query, params)
-            else:
-                cursor.execute(query)
-            result = cursor.fetchall()
-            return result
-        except sqlite3.Error as e:
-            logger.error(f"Ошибка выполнения SQL-запроса: {e}\nQuery: {query}\nParams: {params}")
-            raise
-        finally:
-            cursor.close()
-
-    def parse_date(self, date_str: str) -> Optional[datetime]:
-        """
-        Парсинг даты из текстового представления
+        # Паттерн для русских дат
+        pattern = r'(\d{1,2})\s+(' + '|'.join(self.MONTH_MAP.keys()) + r')\s+(\d{4})'
         
-        Поддерживаемые форматы:
-        - "28 ноября 2025"
-        - "28 ноя 2025"
-        - "28.11.2025"
-        - "2025-11-28"
-        
-        Args:
-            date_str: Строка с датой
-        
-        Returns:
-            Объект datetime или None при ошибке
-        """
-        date_str = date_str.strip().lower()
-        
-        # Прямое преобразование ISO формата
-        try:
-            if re.match(r'\d{4}-\d{2}-\d{2}', date_str):
-                return datetime.strptime(date_str, '%Y-%m-%d')
-        except ValueError:
-            pass
-        
-        # Обработка формата "28 ноября 2025"
-        parts = re.split(r'[.,\s]+', date_str)
-        if len(parts) >= 3:
-            # Определение позиции года
-            year_index = -1
-            for i, part in enumerate(parts):
-                if re.match(r'\d{4}', part):
-                    year_index = i
-                    break
-            
-            if year_index != -1 and year_index >= 2:
-                day = parts[year_index - 2]
-                month_name = parts[year_index - 1]
-                year = parts[year_index]
-                
-                try:
-                    day = int(day)
-                    year = int(year)
-                    month = self.MONTH_MAP.get(month_name.strip('.'))
-                    
-                    if month and 1 <= day <= 31 and 1970 <= year <= 2100:
-                        return datetime(year, month, day)
-                except (ValueError, TypeError):
-                    pass
-        
-        # Обработка формата "28.11.2025"
-        try:
-            return datetime.strptime(date_str, '%d.%m.%Y')
-        except ValueError:
-            pass
-        
-        logger.warning(f"Не удалось распарсить дату: {date_str}")
-        return None
-
-    def parse_date_range(self, date_range_str: str) -> Tuple[Optional[datetime], Optional[datetime]]:
-        """
-        Парсинг диапазона дат
-        
-        Поддерживаемые форматы:
-        - "с 1 ноября 2025 по 5 ноября 2025"
-        - "1-5 ноября 2025"
-        - "по 5 ноября 2025"
-        - "5 ноября 2025"
-        
-        Args:
-            date_range_str: Строка с диапазоном дат
-        
-        Returns:
-            Кортеж (start_date, end_date) или (None, None) при ошибке
-        """
-        date_range_str = date_range_str.lower().strip()
-        
-        # Формат "1-5 ноября 2025"
-        range_match = re.match(
-            r'(\d{1,2})\s*[-–]\s*(\d{1,2})\s+(\w+)\s+(\d{4})',
-            date_range_str,
-            re.IGNORECASE
-        )
-        if range_match:
-            start_day = int(range_match.group(1))
-            end_day = int(range_match.group(2))
-            month_name = range_match.group(3).strip('.')
-            year = int(range_match.group(4))
-            
+        def replace_date(match):
+            day = int(match.group(1))
+            month_name = match.group(2).lower()
+            year = int(match.group(3))
             month = self.MONTH_MAP.get(month_name)
+            
             if month:
                 try:
-                    start_date = datetime(year, month, start_day)
-                    end_date = datetime(year, month, end_day)
-                    return start_date, end_date
-                except ValueError as e:
-                    logger.error(f"Ошибка при создании даты: {e}")
+                    date = datetime(year, month, day)
+                    return date.strftime('%Y-%m-%d')
+                except ValueError:
+                    return match.group(0)
+            return match.group(0)
         
-        # Формат "с 1 ноября 2025 по 5 ноября 2025"
-        if 'с' in date_range_str and 'по' in date_range_str:
-            parts = re.split(r'\s+с\s+|\s+по\s+', date_range_str)
-            if len(parts) == 3:
-                start_date = self.parse_date(parts[1].strip())
-                end_date = self.parse_date(parts[2].strip())
-                if start_date and end_date:
-                    return start_date, end_date
-        
-        # Формат "по 5 ноября 2025" или "до 5 ноября 2025"
-        if re.search(r'по|до', date_range_str):
-            date_match = re.search(r'(?:по|до)\s+(.+)', date_range_str)
-            if date_match:
-                date_str = date_match.group(1).strip()
-                date = self.parse_date(date_str)
-                if date:
-                    # Если указана только конечная дата, считаем начальной датой неделю назад
-                    start_date = date - timedelta(days=7)
-                    return start_date, date
-        
-        # Одиночная дата
-        single_date = self.parse_date(date_range_str)
-        if single_date:
-            return single_date, single_date
-        
-        logger.warning(f"Не удалось распарсить диапазон дат: {date_range_str}")
-        return None, None
+        normalized = re.sub(pattern, replace_date, question, flags=re.IGNORECASE)
+        return normalized
 
-    def get_video_count(self) -> int:
-        """Получить общее количество видео в системе"""
-        query = "SELECT COUNT(*) FROM videos"
-        result = self._execute_query(query)
-        return result[0][0] if result else 0
-
-    def get_videos_by_creator_in_date_range(
-        self, 
-        creator_id: str, 
-        start_date: datetime, 
-        end_date: datetime
-    ) -> int:
-        """
-        Получить количество видео у креатора в диапазоне дат
-        
-        Args:
-            creator_id: ID креатора
-            start_date: Начальная дата
-            end_date: Конечная дата
-        
-        Returns:
-            Количество видео
-        """
-        query = """
-        SELECT COUNT(*) 
-        FROM videos 
-        WHERE creator_id = ? 
-        AND DATE(video_created_at) BETWEEN DATE(?) AND DATE(?)
-        """
-        params = (creator_id, start_date.isoformat(), end_date.isoformat())
-        result = self._execute_query(query, params)
-        return result[0][0] if result else 0
-
-    def get_videos_with_views_more_than(self, views_threshold: int) -> int:
-        """
-        Получить количество видео с просмотрами больше порога
-        
-        Args:
-            views_threshold: Пороговое значение просмотров
-        
-        Returns:
-            Количество видео
-        """
-        query = "SELECT COUNT(*) FROM videos WHERE views_count > ?"
-        params = (views_threshold,)
-        result = self._execute_query(query, params)
-        return result[0][0] if result else 0
-
-    def get_total_views_growth_on_date(self, date: datetime) -> int:
-        """
-        Получить суммарный рост просмотров за указанную дату
-        
-        Args:
-            date: Дата для анализа
-        
-        Returns:
-            Суммарный рост просмотров
-        """
-        query = """
-        SELECT COALESCE(SUM(delta_views_count), 0)
-        FROM video_snapshots
-        WHERE DATE(created_at) = DATE(?)
-        """
-        params = (date.isoformat(),)
-        result = self._execute_query(query, params)
-        return result[0][0] if result else 0
-
-    def get_unique_videos_with_new_views_on_date(self, date: datetime) -> int:
-        """
-        Получить количество уникальных видео с новыми просмотрами за дату
-        
-        Args:
-            date: Дата для анализа
-        
-        Returns:
-            Количество уникальных видео
-        """
-        query = """
-        SELECT COUNT(DISTINCT video_id)
-        FROM video_snapshots
-        WHERE DATE(created_at) = DATE(?) 
-        AND delta_views_count > 0
-        """
-        params = (date.isoformat(),)
-        result = self._execute_query(query, params)
-        return result[0][0] if result else 0
-
-    def search_in_embeddings(self, query_text: str, n_results: int = 5) -> Dict[str, Any]:
-        """
-        Поиск релевантных документов в ChromaDB
-        
-        Args:
-            query_text: Текст запроса
-            n_results: Количество результатов
-        
-        Returns:
-            Результаты поиска в формате словаря
-        """
+    def _get_schema_context(self) -> str:
+        """Получение контекста схемы БД из ChromaDB"""
         try:
-            # Ограничиваем количество результатов реальным количеством в коллекции
-            max_results = min(n_results, self.collection.count())
-            if max_results == 0:
-                logger.warning("Коллекция ChromaDB пуста")
-                return {'documents': [[]], 'metadatas': [[]]}
-            
-            results = self.collection.query(
-                query_texts=[query_text],
-                n_results=max_results,
-                include=['documents', 'metadatas']
-            )
-            
-            # Преобразуем QueryResult в словарь для совместимости
-            result_dict = {
-                'documents': results['documents'],
-                'metadatas': results['metadatas'],
-                'distances': results.get('distances', []),
-                'ids': results.get('ids', [])
-            }
-            
-            logger.debug(f"Найдено {len(result_dict['documents'][0])} релевантных документов")
-            return result_dict
+            # Получаем документ схемы
+            results = self.collection.get(ids=["schema_v1"])
+            if results and results['documents']:
+                return results['documents'][0]
+            return ""
         except Exception as e:
-            logger.error(f"Ошибка при поиске в ChromaDB: {e}")
-            return {'documents': [[]], 'metadatas': [[]]}
+            logger.warning(f"⚠️ Не удалось получить схему из ChromaDB: {e}")
+            return ""
 
-    def _build_context(self, question: str) -> str:
+    def _generate_sql_from_question(self, question: str) -> Optional[str]:
         """
-        Формирование контекста для языковой модели на основе эмбеддингов и структуры данных
-        
-        Args:
-            question: Вопрос пользователя
-        
-        Returns:
-            Строка с контекстом
+        Генерация SQL-запроса из вопроса на естественном языке
+        Использует LLM (Ollama) для понимания намерения и создания запроса
         """
-        # Поиск релевантных документов
-        embedding_results = self.search_in_embeddings(question)
+        # Нормализуем даты в вопросе
+        normalized_question = self._normalize_date_in_question(question)
         
-        # Извлечение полезного контента из результатов
-        context_items = []
+        # Получаем контекст схемы
+        schema_context = self._get_schema_context()
         
-        # Добавляем информацию о доступных методах
-        methods_info = "ДОСТУПНЫЕ МЕТОДЫ ДЛЯ ОТВЕТА НА ВОПРОС:\n"
-        for method_name, method_info in self.AVAILABLE_METHODS.items():
-            methods_info += f"- {method_name}: {method_info['description']}\n"
-            if method_info['params']:
-                methods_info += f"  Параметры: {', '.join(method_info['params'])}\n"
-        context_items.append(methods_info)
-        
-        # Добавляем примеры вопросов и ответов
-        examples = """
-ПРИМЕРЫ ВОПРОСОВ И ОТВЕТОВ:
-- "Сколько всего видео есть в системе?" -> метод: get_video_count
-- "Сколько видео у креатора с id abc123 вышло с 1 по 5 ноября 2025?" -> метод: get_videos_by_creator_in_date_range, параметры: creator_id="abc123", date_range="1-5 ноября 2025"
-- "Сколько видео набрало больше 100000 просмотров?" -> метод: get_videos_with_views_more_than, параметр: views_threshold=100000
-- "На сколько просмотров в сумме выросли все видео 28 ноября 2025?" -> метод: get_total_views_growth_on_date, параметр: date="28 ноября 2025"
-- "Сколько разных видео получали новые просмотры 27 ноября 2025?" -> метод: get_unique_videos_with_new_views_on_date, параметр: date="27 ноября 2025"
-"""
-        context_items.append(examples)
-        
-        # Добавляем релевантные документы из базы знаний
-        documents = embedding_results.get('documents', [[]])[0]
-        if documents:
-            knowledge = "\nРЕЛЕВАНТНАЯ ИНФОРМАЦИЯ ИЗ БАЗЫ ЗНАНИЙ:\n"
-            for i, doc in enumerate(documents[:3], 1):  # Берём не более 3 документов
-                knowledge += f"{i}. {doc}\n"
-            context_items.append(knowledge)
-        
-        return "\n\n".join(context_items)
+        # Формируем промпт для LLM
+        prompt = f"""Ты — эксперт по SQL и PostgreSQL. Твоя задача — сгенерировать ОДИН SQL-запрос на основе вопроса пользователя.
 
-    def _generate_prompt(self, question: str, context: str) -> str:
-        """
-        Генерация промпта для языковой модели
-        
-        Args:
-            question: Вопрос пользователя
-            context: Контекст для модели
-        
-        Returns:
-            Сформированный промпт
-        """
-        return f"""Ты — система аналитики видео данных. Твоя задача — точно определить, какой метод нужно вызвать для ответа на вопрос пользователя, и извлечь все необходимые параметры.
+СХЕМА БАЗЫ ДАННЫХ:
+{schema_context}
 
-КОНТЕКСТ:
-{context}
+ДОПОЛНИТЕЛЬНАЯ ИНФОРМАЦИЯ:
+- Используй PostgreSQL синтаксис
+- Все даты в формате TIMESTAMP, используй DATE() для извлечения даты
+- Для диапазонов дат: WHERE DATE(field) BETWEEN 'date1' AND 'date2'
+- Для одной даты: WHERE DATE(field) = 'date'
+- Запрос ДОЛЖЕН вернуть ОДНО число (используй COUNT, SUM и т.д.)
+- НЕ используй подзапросы без необходимости
+- Для "включительно" используй BETWEEN (он включает границы)
+
+ВАЖНЫЕ ПАТТЕРНЫ:
+1. "Сколько всего видео?" → SELECT COUNT(*) FROM videos
+2. "Сколько видео у креатора X с date1 по date2?" → SELECT COUNT(*) FROM videos WHERE creator_id = 'X' AND DATE(video_created_at) BETWEEN 'date1' AND 'date2'
+3. "Сколько видео набрало больше N просмотров?" → SELECT COUNT(*) FROM videos WHERE views_count > N
+4. "На сколько просмотров выросли видео за date?" → SELECT COALESCE(SUM(delta_views_count), 0) FROM video_snapshots WHERE DATE(created_at) = 'date'
+5. "Сколько видео получали просмотры за date?" → SELECT COUNT(DISTINCT video_id) FROM video_snapshots WHERE DATE(created_at) = 'date' AND delta_views_count > 0
 
 ВОПРОС ПОЛЬЗОВАТЕЛЯ:
-{question}
+{normalized_question}
 
-ИНСТРУКЦИИ:
-1. ВНИМАТЕЛЬНО проанализируй вопрос и контекст.
-2. Извлеки ВСЕ необходимые параметры из вопроса. Для дат используй ФОРМАТ "ДД месяц ГГГГ" (например, "28 ноября 2025").
-3. Если в вопросе не хватает параметров — сделай обоснованное предположение на основе контекста или используй значения по умолчанию.
-4. Верни ответ ТОЛЬКО в формате JSON со следующими полями:
-   - "method": название метода (строка)
-   - "params": объект с параметрами (пустой объект, если параметры не нужны)
-   - "explanation": краткое объяснение выбора (необязательно, но желательно)
+ИНСТРУКЦИЯ:
+Верни ТОЛЬКО SQL-запрос без пояснений, комментариев и markdown. Если не можешь составить запрос - верни "ERROR".
 
-ВАЖНО:
-- Для дат используй ИСХОДНОЕ текстовое представление из вопроса, не преобразовывай в ISO формат.
-- Если не можешь определить метод с уверенностью 95% — верни "method": "unknown".
-- ОТВЕТ ДОЛЖЕН БЫТЬ ТОЛЬКО В ФОРМАТЕ JSON, без дополнительного текста.
-"""
+SQL-ЗАПРОС:"""
 
-    def _validate_model_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            response = ollama.chat(
+                model='qwen2.5:7b',  # Более стабильная модель для SQL
+                messages=[{'role': 'user', 'content': prompt}],
+                options={
+                    'temperature': 0.0,  # Детерминированность
+                    'num_ctx': 8192,
+                    'top_p': 0.1
+                }
+            )
+            
+            sql_query = response['message']['content'].strip()
+            
+            # Очистка от markdown
+            sql_query = re.sub(r'```sql\s*', '', sql_query, flags=re.IGNORECASE)
+            sql_query = re.sub(r'```\s*$', '', sql_query)
+            sql_query = sql_query.strip()
+            
+            # Проверка на ошибку
+            if sql_query.upper() == "ERROR" or not sql_query:
+                logger.warning("⚠️ LLM не смогла сгенерировать SQL")
+                return None
+            
+            # Базовая валидация
+            if not sql_query.upper().startswith("SELECT"):
+                logger.warning(f"⚠️ Некорректный SQL (не начинается с SELECT): {sql_query}")
+                return None
+            
+            # Проверка на опасные операции
+            dangerous_keywords = ['DROP', 'DELETE', 'INSERT', 'UPDATE', 'ALTER', 'CREATE', 'TRUNCATE', 'GRANT', 'REVOKE']
+            sql_upper = sql_query.upper()
+            if any(keyword in sql_upper for keyword in dangerous_keywords):
+                logger.error(f"🚨 ОПАСНЫЙ SQL-запрос обнаружен: {sql_query}")
+                return None
+            
+            logger.info(f"✅ Сгенерирован SQL: {sql_query}")
+            return sql_query
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка генерации SQL через LLM: {e}")
+            return None
+
+    def _execute_sql_query(self, sql_query: str) -> Optional[Union[int, float]]:
         """
-        Валидация и нормализация ответа модели
-        
-        Args:
-            response: Ответ модели в формате JSON
-        
-        Returns:
-            Валидированный ответ
+        Безопасное выполнение SQL-запроса
+        Возвращает единственное число или None
         """
-        validated = {
-            'method': str(response.get('method', '')).strip(),
-            'params': {},
-            'explanation': str(response.get('explanation', '')).strip()
-        }
-        
-        # Валидация метода
-        if validated['method'] not in self.AVAILABLE_METHODS and validated['method'] != 'unknown':
-            logger.warning(f"Недопустимый метод: {validated['method']}")
-            validated['method'] = 'unknown'
-        
-        # Валидация параметров
-        raw_params = response.get('params', {})
-        if isinstance(raw_params, dict):
-            for key, value in raw_params.items():
-                if isinstance(value, str):
-                    validated['params'][key] = value.strip()
-                else:
-                    validated['params'][key] = value
-        
-        return validated
+        cursor = None
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(sql_query)
+            result = cursor.fetchone()
+            
+            if result and result[0] is not None:
+                # Преобразуем в int если возможно
+                value = result[0]
+                if isinstance(value, (int, float)):
+                    return int(value) if isinstance(value, float) and value.is_integer() else value
+                return int(value) if value else 0
+            
+            return 0  # Если результата нет - возвращаем 0
+            
+        except psycopg2.Error as e:
+            logger.error(f"❌ Ошибка выполнения SQL: {e}")
+            logger.error(f"   Запрос: {sql_query}")
+            return None
+        finally:
+            if cursor:
+                cursor.close()
 
     def process_question(self, question: str) -> str:
         """
-        Основной метод обработки вопроса пользователя
+        Основной метод обработки вопроса
         
         Args:
-            question: Вопрос на русском языке
+            question: Вопрос на естественном языке (русский)
         
         Returns:
-            Числовой ответ или сообщение об ошибке
+            Строка с числовым ответом или сообщение об ошибке
         """
-        logger.info(f"Получен вопрос: {question}")
+        logger.info(f"❓ Получен вопрос: {question}")
         
-        try:
-            # Шаг 1: Формирование контекста
-            context = self._build_context(question)
-            
-            # Шаг 2: Генерация промпта
-            prompt = self._generate_prompt(question, context)
-            logger.debug(f"Сформирован промпт: {prompt[:200]}...")
-            
-            # Шаг 3: Запрос к языковой модели
-            try:
-                response = ollama.chat(
-                    model='qwen3-vl:8b-instruct-q8_0',
-                    messages=[{'role': 'user', 'content': prompt}],
-                    options={'temperature': 0.1, 'num_ctx': 4096}
-                )
-                model_response = response['message']['content'].strip()
-                logger.debug(f"Ответ модели: {model_response}")
-            except Exception as e:
-                logger.error(f"Ошибка при обращении к Ollama: {e}")
-                return "Извините, сейчас не могу обработать запрос. Попробуйте позже."
-            
-            # Шаг 4: Парсинг и валидация ответа
-            try:
-                # Очистка ответа от возможного Markdown-оформления
-                json_match = re.search(r'```json\s*([\s\S]*?)\s*```', model_response)
-                if json_match:
-                    json_str = json_match.group(1)
-                else:
-                    json_str = model_response
-                
-                # Очистка от лишних символов в начале и конце
-                json_str = re.sub(r'^[^{]*', '', json_str)
-                json_str = re.sub(r'[^}]*$', '', json_str)
-                
-                response_data = json.loads(json_str)
-                validated = self._validate_model_response(response_data)
-                logger.info(f"Валидированный ответ: {validated}")
-            except (json.JSONDecodeError, TypeError) as e:
-                logger.error(f"Ошибка парсинга JSON: {e}\nОтвет модели: {model_response}")
-                return "Не удалось понять ваш вопрос. Пожалуйста, переформулируйте его."
-            
-            # Шаг 5: Выполнение метода
-            if validated['method'] == 'unknown':
-                return "Не удалось определить, как ответить на ваш вопрос. Пожалуйста, задайте его более конкретно."
-            
-            method_name = validated['method']
-            params = validated['params']
-            
-            try:
-                if method_name == 'get_video_count':
-                    result = self.get_video_count()
-                
-                elif method_name == 'get_videos_by_creator_in_date_range':
-                    creator_id = params.get('creator_id', '').strip()
-                    date_range = params.get('date_range', '').strip()
-                    
-                    if not creator_id or not date_range:
-                        return "Не хватает параметров: требуется ID креатора и диапазон дат."
-                    
-                    start_date, end_date = self.parse_date_range(date_range)
-                    if not start_date or not end_date:
-                        return f"Не удалось распарсить диапазон дат: '{date_range}'"
-                    
-                    result = self.get_videos_by_creator_in_date_range(
-                        creator_id, start_date, end_date
-                    )
-                
-                elif method_name == 'get_videos_with_views_more_than':
-                    views_threshold = params.get('views_threshold')
-                    if views_threshold is None:
-                        return "Не указан порог просмотров."
-                    
-                    try:
-                        threshold = int(views_threshold)
-                        if threshold < 0:
-                            return "Порог просмотров не может быть отрицательным."
-                        result = self.get_videos_with_views_more_than(threshold)
-                    except (TypeError, ValueError):
-                        return f"Некорректное значение порога просмотров: '{views_threshold}'"
-                
-                elif method_name == 'get_total_views_growth_on_date':
-                    date_str = params.get('date', '').strip()
-                    if not date_str:
-                        return "Не указана дата."
-                    
-                    date = self.parse_date(date_str)
-                    if not date:
-                        return f"Не удалось распарсить дату: '{date_str}'"
-                    
-                    result = self.get_total_views_growth_on_date(date)
-                
-                elif method_name == 'get_unique_videos_with_new_views_on_date':
-                    date_str = params.get('date', '').strip()
-                    if not date_str:
-                        return "Не указана дата."
-                    
-                    date = self.parse_date(date_str)
-                    if not date:
-                        return f"Не удалось распарсить дату: '{date_str}'"
-                    
-                    result = self.get_unique_videos_with_new_views_on_date(date)
-                
-                else:
-                    return "Неизвестный метод для обработки вопроса."
-                
-                logger.info(f"Результат для вопроса '{question}': {result}")
-                return str(result)
-            
-            except Exception as e:
-                logger.exception(f"Ошибка при выполнении метода {method_name}: {e}")
-                return f"Ошибка при получении данных: {str(e)}"
+        # Шаг 1: Генерация SQL
+        sql_query = self._generate_sql_from_question(question)
         
-        except Exception as e:
-            logger.exception(f"Критическая ошибка при обработке вопроса: {e}")
-            return "Произошла внутренняя ошибка. Пожалуйста, попробуйте позже."
+        if not sql_query:
+            return "Извините, не удалось понять ваш вопрос. Попробуйте переформулировать."
+        
+        # Шаг 2: Выполнение SQL
+        result = self._execute_sql_query(sql_query)
+        
+        if result is None:
+            return "Ошибка при выполнении запроса к базе данных."
+        
+        logger.info(f"✅ Результат: {result}")
+        return str(result)
 
 def main():
-    """Основная функция для интерактивного режима"""
-    print("=" * 60)
-    print("СИСТЕМА АНАЛИТИКИ ВИДЕО ДАННЫХ")
-    print("=" * 60)
-    print("Задавайте вопросы на русском языке, например:")
-    print("- Сколько всего видео есть в системе?")
-    print("- Сколько видео у креатора с id abc123 вышло с 1 по 5 ноября 2025?")
-    print("- Сколько видео набрало больше 100000 просмотров?")
-    print("- На сколько просмотров в сумме выросли все видео 28 ноября 2025?")
-    print("- Сколько разных видео получали новые просмотры 27 ноября 2025?")
-    print("\nДля выхода введите 'exit' или нажмите Ctrl+C")
-    print("-" * 60)
+    """Интерактивный режим для тестирования"""
+    print("=" * 70)
+    print("🎬 СИСТЕМА АНАЛИТИКИ ВИДЕО ДАННЫХ")
+    print("=" * 70)
+    print("\nПримеры вопросов:")
+    print("  • Сколько всего видео есть в системе?")
+    print("  • Сколько видео у креатора с id XXX вышло с 1 по 5 ноября 2025?")
+    print("  • Сколько видео набрало больше 100000 просмотров?")
+    print("  • На сколько просмотров выросли все видео 28 ноября 2025?")
+    print("  • Сколько видео получали новые просмотры 27 ноября 2025?")
+    print("\nДля выхода: 'exit'")
+    print("-" * 70)
     
     try:
         analytics = VideoAnalytics()
         
         while True:
             try:
-                question = input("\n❓ Ваш вопрос: ").strip()
+                question = input("\n💬 Ваш вопрос: ").strip()
+                
                 if not question:
                     continue
                 
-                if question.lower() in ['exit', 'выход', 'quit']:
-                    print("\nСпасибо за использование системы аналитики!")
+                if question.lower() in ['exit', 'quit', 'выход']:
+                    print("\n👋 До свидания!")
                     break
                 
-                print("🤔 Анализирую вопрос...")
+                print("🤔 Обрабатываю...")
                 answer = analytics.process_question(question)
-                print(f"\n✅ Ответ: {answer}")
-            
+                print(f"📊 Ответ: {answer}")
+                
             except KeyboardInterrupt:
-                print("\n\nПринудительное завершение...")
+                print("\n\n⚠️ Прервано пользователем")
                 break
+            except Exception as e:
+                logger.exception(f"❌ Ошибка: {e}")
+                print(f"❌ Произошла ошибка: {str(e)}")
     
     except Exception as e:
-        logger.exception(f"Критическая ошибка в основном цикле: {e}")
-        print(f"Ошибка при запуске системы: {str(e)}")
-        print("Проверьте логи для получения подробной информации.")
+        logger.exception(f"❌ Критическая ошибка при запуске: {e}")
+        print(f"\n❌ Не удалось запустить систему: {str(e)}")
+        print("Проверьте:")
+        print("  1. PostgreSQL запущен и доступен")
+        print("  2. База данных создана (запустите json_to_base.py)")
+        print("  3. ChromaDB коллекция существует")
 
 if __name__ == "__main__":
     main()
