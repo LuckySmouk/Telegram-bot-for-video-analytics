@@ -1,0 +1,22 @@
+2025-12-12 14:06:51,009 - VideoAnalytics - INFO - Коллекция ChromaDB успешно загружена: 358 записей
+2025-12-12 14:06:51,009 - VideoAnalytics - INFO - Соединение с БД установлено: video_data.db
+2025-12-12 14:08:02,960 - VideoAnalytics - INFO - Получен вопрос: Сколько лайков всего было получено 2025 года 1 декабря?
+2025-12-12 14:08:03,263 - VideoAnalytics - ERROR - Ошибка при поиске в ChromaDB: Collection expecting embedding with dimension of 768, got 384
+2025-12-12 14:08:10,790 - httpx - INFO - HTTP Request: POST http://127.0.0.1:11434/api/chat "HTTP/1.1 200 OK"
+2025-12-12 14:08:10,791 - VideoAnalytics - INFO - Валидированный ответ: {'method': 'unknown', 'params': {}, 'explanation': 'В доступных методах нет функции для получения количества лайков. Все методы относятся к просмотрам или видео, а не к лайкам.'}
+2025-12-12 14:09:49,698 - VideoAnalytics - INFO - Коллекция ChromaDB успешно загружена: 358 записей
+2025-12-12 14:09:49,698 - VideoAnalytics - INFO - Соединение с БД установлено: video_data.db
+2025-12-12 14:10:00,949 - VideoAnalytics - INFO - Получен вопрос: Сколько лайков всего было получено 2025 года 1 декабря?
+2025-12-12 14:10:01,230 - VideoAnalytics - ERROR - Ошибка при поиске в ChromaDB: Collection expecting embedding with dimension of 768, got 384
+2025-12-12 14:10:03,043 - httpx - INFO - HTTP Request: POST http://127.0.0.1:11434/api/chat "HTTP/1.1 200 OK"
+2025-12-12 14:10:03,044 - VideoAnalytics - INFO - Валидированный ответ: {'method': 'unknown', 'params': {}, 'explanation': 'В доступных методах нет функции для получения количества лайков. Все методы относятся к просмотрам или видео, а не к лайкам.'}
+2025-12-12 14:10:39,800 - VideoAnalytics - INFO - Коллекция ChromaDB успешно загружена: 358 записей
+2025-12-12 14:10:39,801 - VideoAnalytics - INFO - Соединение с БД установлено: video_data.db
+2025-12-12 14:10:59,212 - VideoAnalytics - INFO - Получен вопрос: Сколько лайков всего было получено 1 декабря 2025 года?
+2025-12-12 14:10:59,481 - VideoAnalytics - ERROR - Ошибка при поиске в ChromaDB: Collection expecting embedding with dimension of 768, got 384
+2025-12-12 14:11:01,710 - httpx - INFO - HTTP Request: POST http://127.0.0.1:11434/api/chat "HTTP/1.1 200 OK"
+2025-12-12 14:11:01,711 - VideoAnalytics - INFO - Валидированный ответ: {'method': 'unknown', 'params': {}, 'explanation': 'В доступных методах нет функции для получения количества лайков. Все методы относятся к просмотрам или видео, а не к лайкам.'}
+2025-12-12 14:14:16,818 - VideoAnalytics - INFO - Получен вопрос: git add .
+2025-12-12 14:14:16,998 - VideoAnalytics - ERROR - Ошибка при поиске в ChromaDB: Collection expecting embedding with dimension of 768, got 384
+2025-12-12 14:14:18,980 - httpx - INFO - HTTP Request: POST http://127.0.0.1:11434/api/chat "HTTP/1.1 200 OK"
+2025-12-12 14:14:18,981 - VideoAnalytics - INFO - Валидированный ответ: {'method': 'unknown', 'params': {}, 'explanation': "Вопрос 'git add .' не относится к анализу видео данных и не соответствует ни одному из доступных методов."}
